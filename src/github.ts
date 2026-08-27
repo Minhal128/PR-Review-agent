@@ -1,5 +1,5 @@
 import { Octokit } from "@octokit/rest";
-import type { ReviewedFinding, ReviewResult, Severity } from "./types.ts";
+import type { ReviewedFinding, ReviewResult, Severity, SonarReport } from "./types.ts";
 
 export interface PullRequest {
   owner: string;
@@ -8,6 +8,8 @@ export interface PullRequest {
   title: string;
   body: string;
   headSha: string;
+  /** branch this PR targets - Sonar analyses the change set against it */
+  baseRef: string;
   author: string;
   diff: string;
 }
@@ -35,6 +37,7 @@ export async function fetchPullRequest(
     title: meta.data.title,
     body: meta.data.body ?? "",
     headSha: meta.data.head.sha,
+    baseRef: meta.data.base.ref,
     author: meta.data.user?.login ?? "unknown",
     // With `mediaType.format = "diff"` GitHub returns raw text, but the types
     // still describe the JSON shape.
@@ -95,6 +98,9 @@ export function summaryBody(result: ReviewResult, pr: PullRequest): string {
     }
   }
 
+  const sonarSection = sonarBlock(result.sonar);
+  if (sonarSection) lines.push("", sonarSection);
+
   if (suppressed > 0) {
     lines.push(
       "",
@@ -118,6 +124,45 @@ export function summaryBody(result: ReviewResult, pr: PullRequest): string {
     `<sub>${usage.length} agents · ${inTok.toLocaleString()} in / ${outTok.toLocaleString()} out tokens · ${(slowest / 1000).toFixed(1)}s · reviewed \`${pr.headSha.slice(0, 7)}\`</sub>`,
   );
 
+  return lines.join("\n");
+}
+
+/**
+ * Sonar findings get their own section rather than being merged into the agent
+ * findings. They come from a rule engine, not a model - collapsing the two
+ * would hide which is which, and only one of them can hallucinate.
+ */
+function sonarBlock(sonar: SonarReport | undefined): string {
+  if (!sonar) return "";
+  if (sonar.ran.length === 0 && sonar.failed.length === 0) return "";
+
+  const lines: string[] = ["### Static analysis (SonarQube)", ""];
+
+  if (sonar.issues.length === 0) {
+    lines.push(`Scans run: ${sonar.ran.join(", ") || "none"}. No issues reported.`);
+  } else {
+    const byScan: Record<string, number> = {};
+    for (const i of sonar.issues) byScan[i.scan] = (byScan[i.scan] ?? 0) + 1;
+    const tally = Object.entries(byScan)
+      .map(([s, n]) => `**${n}** ${s}`)
+      .join(" · ");
+    lines.push(tally, "", "<details><summary>Show findings</summary>", "");
+
+    for (const i of sonar.issues.slice(0, 50)) {
+      const loc = i.line ? `${i.path}:${i.line}` : i.path;
+      const where = loc ? "`" + loc + "`" : "_project_";
+      lines.push(`- ${where} **${i.severity}** ${i.message} <sub>${i.rule}</sub>`);
+    }
+    if (sonar.issues.length > 50) {
+      lines.push(`- _...and ${sonar.issues.length - 50} more_`);
+    }
+    lines.push("", "</details>");
+  }
+
+  if (sonar.failed.length > 0) {
+    const which = sonar.failed.map((f) => "`" + f.scan + "` (" + f.reason + ")").join(", ");
+    lines.push("", `> ⚠️ ${which} did not run, so that check is missing from this review.`);
+  }
   return lines.join("\n");
 }
 
