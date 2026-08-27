@@ -121,6 +121,7 @@ async function runSpecialist(
   files: FileDiff[],
   prContext: string,
   effort: "low" | "medium" | "high" | "xhigh" | "max",
+  sonarContext: string,
 ): Promise<AgentRun> {
   const started = Date.now();
   const empty = (failed?: string): AgentRun => ({
@@ -134,7 +135,7 @@ async function runSpecialist(
       model: MODEL,
       max_tokens: 16000,
       thinking: { type: "adaptive" },
-      system: spec.brief + SHARED_RULES,
+      system: spec.brief + SHARED_RULES + sonarContext,
       messages: [
         {
           role: "user",
@@ -180,10 +181,13 @@ export async function runAgents(
   files: FileDiff[],
   prContext: string,
   effort: "low" | "medium" | "high" | "xhigh" | "max",
+  sonarContext: string,
   only?: string[],
 ): Promise<AgentRun[]> {
   const selected = only?.length
     ? SPECIALISTS.filter((s) => only.includes(s.name))
     : SPECIALISTS;
-  return Promise.all(selected.map((s) => runSpecialist(client, s, files, prContext, effort)));
+  return Promise.all(
+    selected.map((s) => runSpecialist(client, s, files, prContext, effort, sonarContext)),
+  );
 }
