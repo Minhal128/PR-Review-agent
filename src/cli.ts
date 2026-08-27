@@ -19,9 +19,16 @@ Options
   --json                Print the raw result as JSON (implies --dry-run)
   -h, --help
 
+SonarQube (runs before the agents; agents are told not to repeat its findings)
+  --no-sonar            Skip static analysis entirely
+  --sonar-project <key> Project key, e.g. minhal128_myrepo
+  --sonar-depth <d>     STANDARD (per file) or DEEP (cross-file). Default DEEP.
+  --sonar-scans <list>  Subset of: code,secrets,dependencies
+
 Environment
   ANTHROPIC_API_KEY     required
   GITHUB_TOKEN          required
+  SONAR_TOKEN           required unless the CLI is already logged in (sonar auth login)
 `;
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
@@ -88,6 +95,17 @@ async function main() {
   if (args["min-confidence"]) config.minConfidence = Number(args["min-confidence"]);
   if (args["max-comments"]) config.maxComments = Number(args["max-comments"]);
   if (args.agents) config.agents = (args.agents as string).split(",").map((s) => s.trim());
+
+  if (args["no-sonar"]) config.sonar.enabled = false;
+  if (args["sonar-project"]) config.sonar.projectKey = args["sonar-project"] as string;
+  if (args["sonar-depth"]) {
+    config.sonar.depth = (args["sonar-depth"] as string).toUpperCase() as "STANDARD" | "DEEP";
+  }
+  if (args["sonar-scans"]) {
+    config.sonar.scans = (args["sonar-scans"] as string)
+      .split(",")
+      .map((s) => s.trim()) as typeof config.sonar.scans;
+  }
 
   const json = Boolean(args.json);
   const dryRun = Boolean(args["dry-run"]) || json;

@@ -20,15 +20,31 @@ GitHub Actions  ──► webhook delivery, HMAC, queueing, idempotency, hosting
    fetch diff  ──► parse hunks, map added lines, drop ignored/binary/deleted files
         │
         ▼
+   SonarQube   ──► code (DEEP, cross-file) + secrets + dependency risks
+        │            deterministic, exhaustive, cheap — runs first and claims
+        │            everything a rule engine can catch
+        ▼
    ┌────┴────┬──────────┬────────┐
 security  correctness  tests   docs      ← four agents, concurrent, one API call each
-   └────┬────┴──────────┴────────┘
+   └────┬────┴──────────┴────────┘        each told: do NOT repeat Sonar's findings
         ▼
   aggregate  ──► confidence gate → dedupe → severity sort → comment cap
         │
         ▼
-  post review ──► inline comments on changed lines + summary
+  post review ──► inline comments + summary (Sonar in its own section)
 ```
+
+**Why Sonar runs first.** A rule engine is deterministic, exhaustive within its rules,
+and costs nothing per run — it should claim every finding it can before a single token
+is spent. Its results are then injected into all four agent prompts as a do-not-repeat
+list, so the model stops spending review comments on things the author can already see
+in the Sonar check. What is left for the agents is what static analysis structurally
+cannot do: wrong intent, logic spanning several functions, missing test cases, absent
+migration notes.
+
+Sonar findings are reported in their own section of the review, not merged into the
+agent findings. They come from different machinery and only one of the two can
+hallucinate — collapsing them would hide which is which.
 
 Each agent gets a narrow brief and is explicitly told that returning nothing is a correct
 answer. A single generalist reviewer drifts toward whatever is easiest to say — naming and
@@ -41,6 +57,9 @@ not in the security agent's brief, so it has nothing to pad with.
 npm install
 cp .env.example .env      # fill in ANTHROPIC_API_KEY and GITHUB_TOKEN
 npm test                  # self-check, no API calls, no network
+
+npm install -g sonarqube-cli   # for the static-analysis stage
+sonar auth login               # stores a token in the OS keychain
 ```
 
 Try it against a real PR without posting anything:
@@ -49,14 +68,23 @@ Try it against a real PR without posting anything:
 npm run review -- --repo owner/name --pr 42 --dry-run
 ```
 
+Sonar is on by default. To skip it: `--no-sonar`, or `"sonar": {"enabled": false}` in the config.
+
 ## Running it on your repos
 
-1. Push this project to GitHub as `<you>/pr-reviewer`.
-2. Add `ANTHROPIC_API_KEY` to the target repo: **Settings → Secrets and variables → Actions**.
+1. Push this project to GitHub. It already lives at `Minhal128/PR-Review-agent`.
+2. In the target repo, **Settings → Secrets and variables → Actions**:
+   - secret `ANTHROPIC_API_KEY`
+   - secret `SONAR_TOKEN` (from SonarCloud → My Account → Security)
+   - variable `SONAR_PROJECT_KEY` — for this repo that is `Minhal128_PR-Review-agent`
+   - variable `SONAR_ORGANIZATION`, e.g. `minhal128`
 3. Copy `.github/workflows/pr-review.yml` into the target repo.
-4. Edit the `repository:` field in that workflow to point at your `pr-reviewer` repo.
+4. The `repository:` field in that workflow already points at `Minhal128/PR-Review-agent`.
 
 `GITHUB_TOKEN` is provided by Actions automatically — you do not create one.
+
+The workflow checks out with `fetch-depth: 0` because Sonar compares the change set against
+the base branch, which a shallow clone cannot do.
 
 ## Configuration
 
@@ -72,10 +100,16 @@ npm run review -- --repo owner/name --pr 42 --dry-run
 | `maxFiles` | `60` | Skip review past this many changed files. |
 | `requestChangesOnCritical` | `false` | Post `REQUEST_CHANGES` instead of `COMMENT` when a critical is found. |
 | `ignore` | lockfiles, snapshots, `dist/**`… | Glob patterns to skip. |
+| `sonar.enabled` | `true` | Run static analysis before the agents. |
+| `sonar.projectKey` | `""` | SonarCloud project key. Required for the `code` scan. |
+| `sonar.scans` | all three | Any of `code`, `secrets`, `dependencies`. |
+| `sonar.depth` | `DEEP` | `DEEP` follows calls across files; `STANDARD` is per-file and faster. |
+| `sonar.timeoutMs` | `600000` | Give up on a scan rather than holding the review. |
 
 ```bash
 npm run review -- --repo o/n --pr 42 --agents security,correctness --effort max
-npm run review -- --repo o/n --pr 42 --json > findings.json
+npm run review -- --repo o/n --pr 42 --no-sonar --json > findings.json
+npm run review -- --repo o/n --pr 42 --sonar-scans secrets,dependencies --sonar-depth STANDARD
 ```
 
 ## Design decisions worth knowing
@@ -104,9 +138,12 @@ at the same `file:line` with overlapping titles collapse to the most severe vers
 | LangGraph orchestration | `Promise.all` | The graph is a single fan-out into one aggregation step. That is four lines of TypeScript; a framework would be the larger dependency. |
 | Tiger Cloud / pgvector semantic code search | Diff only | The diff plus its context lines is what a reviewer reads. Retrieval across the repo is worth adding when findings start needing whole-repo knowledge — measure that first rather than assuming it. |
 | Token economics dashboard | Token counts in the PR summary | Same number, no service to run. |
+| _(not in the article)_ | SonarQube stage before the agents | Anything a rule engine can catch deterministically should not be paid for in tokens, and should not be re-reported by a model that might get it wrong. |
 
 If you later want cross-file reasoning — "this change breaks a caller three directories away" —
-that is the point where the retrieval layer earns its cost. It does not before.
+that is the point where the retrieval layer earns its cost. Note that `sonar.depth: "DEEP"`
+already does cross-file analysis within its rule set, so measure what is still missing before
+adding a vector store.
 
 ## Cost
 
@@ -119,6 +156,13 @@ usage is printed in every PR summary so the real number is visible rather than e
 - **Fork PRs are skipped.** The workflow uses `pull_request`, which does not expose secrets to
   forks. Reviewing them needs `pull_request_target`, which runs a write-scoped token against
   untrusted code — not a safe default.
-- **No repo-wide context.** The agents see the diff, not the codebase.
+- **No repo-wide context.** The agents see the diff, not the codebase. Sonar's `DEEP` mode
+  partly covers this within its rules.
 - **Non-determinism.** Two runs on the same diff may not produce identical findings. The
   confidence gate reduces the spread; it does not remove it.
+- **The Sonar JSON reader is written defensively, not against observed data.** Both SonarCloud
+  projects available at build time had zero open issues, so the populated shape of
+  `sonar analyze --format json` could not be confirmed. `src/sonar.ts` probes several plausible
+  wrappers and skips anything unrecognised rather than throwing, and `npm test` pins the shapes
+  it handles. If a Sonar scan reports issues in the CLI but the review shows none, that reader
+  is the first place to look — dump the raw payload and add the real shape to the test.
