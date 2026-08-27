@@ -4,6 +4,7 @@ import { runAgents } from "./agents.ts";
 import { aggregate, type AggregateOptions } from "./aggregate.ts";
 import { parseDiff, reviewable } from "./diff.ts";
 import { fetchPullRequest, postReview, summaryBody, type PullRequest } from "./github.ts";
+import { DEFAULT_SONAR, runSonar, sonarContext, type SonarOptions } from "./sonar.ts";
 import type { ReviewResult, Severity } from "./types.ts";
 
 export interface Config extends AggregateOptions {
@@ -13,6 +14,8 @@ export interface Config extends AggregateOptions {
   requestChangesOnCritical: boolean;
   /** skip review entirely past this many changed files - a 400-file PR is not reviewable */
   maxFiles: number;
+  /** SonarQube runs before the agents; baseRef is filled in from the PR */
+  sonar: Omit<SonarOptions, "baseRef">;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -34,6 +37,7 @@ export const DEFAULT_CONFIG: Config = {
   ],
   requestChangesOnCritical: false,
   maxFiles: 60,
+  sonar: DEFAULT_SONAR,
 };
 
 export interface RunOptions {
@@ -84,6 +88,16 @@ export async function run(opts: RunOptions): Promise<RunOutcome> {
     return { pr, result: empty, skipped, markdown: summaryBody(empty, pr) };
   }
 
+  // Static analysis first. It is deterministic, exhaustive and cheap, so it
+  // should claim everything it can before any token is spent - and the agents
+  // are then told not to repeat it.
+  let sonarReport;
+  if (config.sonar.enabled) {
+    log("running sonar scans");
+    sonarReport = await runSonar({ ...config.sonar, baseRef: pr.baseRef }, log);
+    log(`sonar: ${sonarReport.issues.length} issue(s) from [${sonarReport.ran.join(", ") || "none"}]`);
+  }
+
   const prContext = [
     `Pull request: ${pr.title}`,
     pr.body ? `\nDescription:\n${pr.body}` : "",
@@ -91,14 +105,21 @@ export async function run(opts: RunOptions): Promise<RunOutcome> {
   ].join("\n");
 
   log(`running agents (effort=${config.effort})`);
-  const runs = await runAgents(anthropic, files, prContext, config.effort, config.agents);
+  const runs = await runAgents(
+    anthropic,
+    files,
+    prContext,
+    config.effort,
+    sonarReport ? sonarContext(sonarReport) : "",
+    config.agents,
+  );
   for (const r of runs) {
     log(
       `  ${r.agent}: ${r.findings.length} raw finding(s) in ${(r.usage.ms / 1000).toFixed(1)}s${r.usage.failed ? ` [${r.usage.failed}]` : ""}`,
     );
   }
 
-  const result = aggregate(runs, files, config);
+  const result = { ...aggregate(runs, files, config), sonar: sonarReport };
   log(`${result.findings.length} kept, ${result.suppressed} suppressed`);
 
   const markdown = summaryBody(result, pr);

@@ -23,25 +23,39 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      - name: Check out the code under review
+        uses: actions/checkout@v4
+        with:
+          # Sonar analyses the change set against the base branch, so it needs
+          # more than the single squashed commit a shallow clone gives.
+          fetch-depth: 0
+
       - name: Check out the reviewer
         uses: actions/checkout@v4
         with:
-          repository: minhal128/pr-reviewer
+          repository: Minhal128/PR-Review-agent
           path: .pr-reviewer
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - name: Install
+      - name: Install reviewer
         working-directory: .pr-reviewer
         run: npm ci --omit=dev
 
+      - name: Install SonarQube CLI
+        run: npm install -g sonarqube-cli
+
       - name: Review
-        working-directory: .pr-reviewer
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node --experimental-strip-types src/cli.ts
+        run: |
+          node --experimental-strip-types .pr-reviewer/src/cli.ts \
+            --config .pr-reviewer/reviewers.config.json \
+            --sonar-project "${{ vars.SONAR_PROJECT_KEY }}"

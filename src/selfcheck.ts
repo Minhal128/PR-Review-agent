@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import type { AgentRun } from "./agents.ts";
 import { aggregate } from "./aggregate.ts";
 import { globMatch, parseDiff, reviewable } from "./diff.ts";
+import { collect, sonarContext } from "./sonar.ts";
 import type { Finding } from "./types.ts";
 
 const SAMPLE = [
@@ -148,4 +149,80 @@ const capped = aggregate(runs, keep, {
 assert.ok(capped.findings.length > 0, "cap does not delete findings");
 assert.ok(capped.findings.every((f) => !f.inline), "cap demotes every finding to summary");
 
-console.log(`ok - ${files.length} files parsed, ${result.findings.length} findings after aggregation`);
+// --- sonar payload normalisation -------------------------------------------
+//
+// The CLI's populated JSON shape could not be observed against a project with
+// live issues, so the reader probes several plausible wrappers. These cases pin
+// that behaviour: if a future CLI version changes shape, this fails loudly
+// instead of silently returning zero issues and letting the agents re-report
+// everything Sonar already caught.
+
+// SonarQube web API shape: component is "projectKey:path", line inside textRange
+const apiShape = collect(
+  {
+    issues: [
+      {
+        key: "abc",
+        rule: "typescript:S1854",
+        severity: "MAJOR",
+        component: "minhal128_demo:src/app.ts",
+        type: "CODE_SMELL",
+        textRange: { startLine: 12, endLine: 12 },
+        message: "Remove this useless assignment.",
+      },
+    ],
+  },
+  "code",
+);
+assert.equal(apiShape.length, 1, "web API issue shape is read");
+assert.equal(apiShape[0]!.path, "src/app.ts", "project key prefix stripped from component");
+assert.equal(apiShape[0]!.line, 12, "line taken from textRange.startLine");
+assert.equal(apiShape[0]!.severity, "MAJOR");
+
+// CLI secrets shape: nested under `secrets`, uses filePath/line directly
+const secretShape = collect(
+  {
+    secrets: {
+      issues: [{ ruleKey: "secrets:S6698", filePath: ".env", line: 3, message: "AWS key detected" }],
+      summary: { totalIssues: 1 },
+    },
+    agentic: null,
+    messages: [],
+  },
+  "secrets",
+);
+assert.equal(secretShape.length, 1, "nested secrets bucket is read");
+assert.equal(secretShape[0]!.path, ".env");
+assert.equal(secretShape[0]!.rule, "secrets:S6698");
+
+// Empty result - the exact shape observed from the real CLI on a clean scan
+assert.deepEqual(
+  collect({ secrets: { issues: [], summary: { totalIssues: 0 } }, agentic: null, messages: [] }, "secrets"),
+  [],
+  "clean scan yields no issues",
+);
+
+// Project-level finding with no file or line still survives
+const depShape = collect(
+  { dependencyRisks: [{ id: "CVE-2024-1", severity: "HIGH", message: "lodash < 4.17.21" }] },
+  "dependencies",
+);
+assert.equal(depShape.length, 1, "dependency risks bucket is read");
+assert.equal(depShape[0]!.line, null, "missing line becomes null, not NaN");
+
+// Garbage must not throw - a CLI version bump should degrade, not crash the review
+assert.deepEqual(collect(null, "code"), [], "null payload");
+assert.deepEqual(collect({ issues: "not-an-array" }, "code"), [], "wrong type");
+assert.deepEqual(collect({ issues: [null, 42, {}] }, "code"), [], "junk entries skipped");
+
+// Sonar context tells agents not to duplicate, and says so even when clean
+const ctx = sonarContext({ issues: secretShape, ran: ["secrets"], failed: [] });
+assert.match(ctx, /Do NOT repeat/, "context instructs agents not to duplicate");
+assert.match(ctx, /AWS key detected/, "context lists the actual findings");
+const cleanCtx = sonarContext({ issues: [], ran: ["code"], failed: [] });
+assert.match(cleanCtx, /already looked/, "clean scan still suppresses static-analysis findings");
+assert.equal(sonarContext({ issues: [], ran: [], failed: [] }), "", "no scans means no context");
+
+console.log(
+  `ok - ${files.length} files parsed, ${result.findings.length} findings after aggregation, sonar reader verified`,
+);

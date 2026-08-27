@@ -69,9 +69,27 @@ export interface AgentUsage {
   failed?: string;
 }
 
+/** One normalized SonarQube finding, from any of the three scans. */
+export interface SonarIssue {
+  scan: "code" | "secrets" | "dependencies";
+  rule: string;
+  severity: string;
+  type: string;
+  path: string;
+  line: number | null;
+  message: string;
+}
+
+export interface SonarReport {
+  issues: SonarIssue[];
+  ran: ("code" | "secrets" | "dependencies")[];
+  failed: { scan: "code" | "secrets" | "dependencies"; reason: string }[];
+}
+
 export interface ReviewResult {
   findings: ReviewedFinding[];
   /** raised by an agent but dropped below the confidence threshold */
   suppressed: number;
   usage: AgentUsage[];
+  sonar?: SonarReport;
 }
