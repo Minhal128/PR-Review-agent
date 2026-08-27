@@ -6,6 +6,13 @@
   "minSeverity": "minor",
   "requestChangesOnCritical": false,
   "maxFiles": 60,
+  "sonar": {
+    "enabled": true,
+    "projectKey": "",
+    "scans": ["code", "secrets", "dependencies"],
+    "depth": "DEEP",
+    "timeoutMs": 600000
+  },
   "ignore": [
     "**/package-lock.json",
     "**/pnpm-lock.yaml",
