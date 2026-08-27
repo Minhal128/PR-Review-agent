@@ -1,0 +1,20 @@
+{
+  "effort": "high",
+  "minConfidence": 0.6,
+  "minConfidenceCritical": 0.4,
+  "maxComments": 15,
+  "minSeverity": "minor",
+  "requestChangesOnCritical": false,
+  "maxFiles": 60,
+  "ignore": [
+    "**/package-lock.json",
+    "**/pnpm-lock.yaml",
+    "**/yarn.lock",
+    "**/*.snap",
+    "**/*.min.js",
+    "**/*.svg",
+    "dist/**",
+    "build/**",
+    "**/__generated__/**"
+  ]
+}

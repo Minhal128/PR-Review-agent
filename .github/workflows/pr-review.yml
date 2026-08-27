@@ -1,0 +1,47 @@
+# Drop this file into any repo you want reviewed, at .github/workflows/pr-review.yml
+#
+# Uses `pull_request`, not `pull_request_target`: secrets are not exposed to PRs
+# from forks, so fork PRs are skipped rather than reviewed. That is the safe
+# default - `pull_request_target` runs with a write token against untrusted code.
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # A new push supersedes the review still running for the previous commit.
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Check out the reviewer
+        uses: actions/checkout@v4
+        with:
+          repository: minhal128/pr-reviewer
+          path: .pr-reviewer
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install
+        working-directory: .pr-reviewer
+        run: npm ci --omit=dev
+
+      - name: Review
+        working-directory: .pr-reviewer
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node --experimental-strip-types src/cli.ts

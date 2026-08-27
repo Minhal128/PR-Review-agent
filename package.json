@@ -1,0 +1,25 @@
+{
+  "name": "pr-reviewer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-agent PR reviewer: parallel specialist agents with confidence-gated findings",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "review": "node --experimental-strip-types src/cli.ts",
+    "test": "node --experimental-strip-types src/selfcheck.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.121.0",
+    "@octokit/rest": "^22.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
